@@ -19,8 +19,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 DEFAULT_REPOS = [
-    "laravel/framework", "facebook/react", "vercel/next.js", "microsoft/vscode",
     "python/cpython", "nodejs/node", "kubernetes/kubernetes", "django/django",
+    "pytorch/pytorch", "tensorflow/tensorflow", "huggingface/transformers",
+    "pydantic/pydantic", "fastapi/fastapi", "psf/requests", "microsoft/playwright",
+    "SeleniumHQ/selenium", "pytest-dev/pytest", "facebook/react",
+    "vercel/next.js", "laravel/framework", "laravel/docs",
 ]
 
 POSITIVE = re.compile(r"(pr welcome|pull request welcome|please (?:send|open|submit) a pr|contributions? welcome|help wanted)", re.I)
@@ -57,9 +60,16 @@ def prior_prs(repo: str, number: int) -> list[dict]:
         return []
 
 
-def issue_comments(repo: str, number: int) -> str:
-    return gh(["issue", "view", str(number), "-R", repo, "--json", "comments",
-               "--jq", "[.comments[].body] | join(\" \\n \")"])
+def issue_text(repo: str, number: int) -> str:
+    raw = gh(["issue", "view", str(number), "-R", repo, "--json", "body,comments"])
+    if not raw:
+        return ""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return ""
+    comments = "\n".join(c.get("body", "") for c in data.get("comments", []))
+    return (data.get("body") or "") + "\n" + comments
 
 
 def age_days(created_at: str) -> int:
@@ -78,16 +88,20 @@ def vet(repo: str, item: dict) -> dict | None:
     prs = prior_prs(repo, number)
     if prs:
         return None
-    text = issue_comments(repo, number)
+    text = issue_text(repo, number)
     if NEGATIVE.search(text):
         return None
+    labels = {x.get("name", "").lower() for x in item.get("labels", [])}
+    positive_labels = bool(labels & {
+        "enhancement", "feature", "help wanted", "good first issue", "contributions welcome"
+    })
     return {
         "repo": repo,
         "number": number,
         "title": item.get("title", ""),
         "comments": comments,
         "age_days": age_days(item.get("created_at", "")),
-        "maintainer_blessed": bool(POSITIVE.search(text)),
+        "maintainer_blessed": positive_labels or bool(POSITIVE.search(text)),
         "url": item.get("html_url", f"https://github.com/{repo}/issues/{number}"),
     }
 
@@ -96,7 +110,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--repos", default=",".join(DEFAULT_REPOS))
-    ap.add_argument("--per-repo", type=int, default=25)
+    ap.add_argument("--per-repo", type=int, default=15)
     ap.add_argument("--out", help="write Markdown report to this file")
     args = ap.parse_args(argv)
 
